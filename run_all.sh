@@ -148,6 +148,23 @@ ensure_bins() {
   fi
 }
 
+# preflight: 1 execução mínima; se o ambiente OpenCL estiver quebrado, aborta em vez de repetir falhas
+PREFLIGHT_DONE=0
+preflight() {
+  [[ $PREFLIGHT_DONE == 1 || ${SKIP_PREFLIGHT:-0} == 1 ]] && return 0
+  mkdir -p "$D_ENV"; log "preflight: teste mínimo do ambiente OpenCL"
+  "$OCL_BIN" 32 32 0 32 < /dev/null > "$D_ENV/preflight.out" 2> "$D_ENV/preflight.err"; local rc=$?
+  if (( rc != 0 )); then
+    log "ERRO: o programa OpenCL falhou no teste mínimo (rc=$rc). Nenhuma etapa que usa OpenCL foi executada."
+    sed 's/^/  | /' "$D_ENV/preflight.err" | tee -a "$LOG"
+    { echo "  /etc/OpenCL/vendors:"; ls -la /etc/OpenCL/vendors/ 2>&1 | sed 's/^/    /'; } | tee -a "$LOG"
+    log "Rode './run_all.sh env' e veja $D_ENV/{clinfo,vendors,nvidia-smi}.txt. Para ignorar este teste: SKIP_PREFLIGHT=1."
+    exit 3
+  fi
+  PREFLIGHT_DONE=1
+}
+ensure_ocl() { ensure_bins; preflight; }
+
 # ocl_run BASE w h iter local [dump]  (TIMED=1 => /usr/bin/time -v). Gera BASE.out/.err/.rc[/.time]
 ocl_run() {
   local base=$1 rc; shift
@@ -205,7 +222,7 @@ fi
 
 # ---- valid (3.1.2, roteiro 4): grade inteira, serial x OpenCL --------------------
 if want valid; then
-  log "### valid: casos {$VAL_CASES} x local {$LOCAL_LIST}"; ensure_bins
+  log "### valid: casos {$VAL_CASES} x local {$LOCAL_LIST}"; ensure_ocl
   for c in $VAL_CASES; do
     IFS=x read -r vw vh vi <<< "$c"
     sb="$D_VAL/serial_$c"; serial_run "$sb" "$vw" "$vh" "$vi" "$sb.dump"
@@ -221,14 +238,14 @@ fi
 
 # ---- measure (3.2.1 / 3.2.2, roteiro 5): eventos + T_total no host -----------------
 if want measure; then
-  log "### measure: ${W}x${H} iter=$ITER local=$LOCAL_DEFAULT REPS=$REPS"; ensure_bins
+  log "### measure: ${W}x${H} iter=$ITER local=$LOCAL_DEFAULT REPS=$REPS"; ensure_ocl
   for i in $(seq 1 "$REPS"); do ocl_run "$D_MEAS/run_r$i" "$W" "$H" "$ITER" "$LOCAL_DEFAULT"; done
   ANALYZE+=(measure)
 fi
 
 # ---- time (3.2.3): /usr/bin/time -v sobre o programa OpenCL -------------------------
 if want time; then
-  need_time; ensure_bins
+  need_time; ensure_ocl
   log "### time (3.2.3): ${W}x${H} iter=$ITER local=$LOCAL_DEFAULT REPS=$REPS"
   for i in $(seq 1 "$REPS"); do TIMED=1 ocl_run "$D_TIME/run_r$i" "$W" "$H" "$ITER" "$LOCAL_DEFAULT"; done
   ANALYZE+=(time)
@@ -236,7 +253,7 @@ fi
 
 # ---- localsize (3.3, roteiro 6) -------------------------------------------------------
 if want localsize; then
-  log "### localsize: {$LOCAL_LIST} x REPS=$REPS (${W}x${H}, iter=$ITER)"; ensure_bins
+  log "### localsize: {$LOCAL_LIST} x REPS=$REPS (${W}x${H}, iter=$ITER)"; ensure_ocl
   for L in $LOCAL_LIST; do
     for i in $(seq 1 "$REPS"); do
       ocl_run "$D_LS/L${L}_r$i" "$W" "$H" "$ITER" "$L"
@@ -248,7 +265,7 @@ fi
 
 # ---- occupancy (3.4, roteiro 7): limites reais do dispositivo -------------------------
 if want occupancy; then
-  log "### occupancy"; ensure_bins
+  log "### occupancy"; ensure_ocl
   ocl_run "$D_OCC/devinfo" 32 32 0 32
   command -v clinfo >/dev/null 2>&1 && clinfo > "$D_OCC/clinfo.txt" 2>&1
   ANALYZE+=(occupancy)
@@ -256,7 +273,7 @@ fi
 
 # ---- opt (3.5, roteiro 8): variantes de kernel, se existirem ------------------------
 if want opt; then
-  log "### opt: variantes {$OPT_VARIANTS}"; ensure_bins
+  log "### opt: variantes {$OPT_VARIANTS}"; ensure_ocl
   serial_run "$D_OPT/serial_val" 64 64 100 "$D_OPT/serial_val.dump"
   for v in $OPT_VARIANTS; do
     name=${v%%=*}; file=${v#*=}
@@ -278,7 +295,7 @@ fi
 
 # ---- compare (3.7, roteiro 10): varredura de N (crossover) + tabela final ---------------
 if want compare; then
-  log "### compare: N={$SWEEP_SIZES} iter=$SWEEP_ITER, REPS=$SWEEP_REPS, local=$LOCAL_DEFAULT"; ensure_bins
+  log "### compare: N={$SWEEP_SIZES} iter=$SWEEP_ITER, REPS=$SWEEP_REPS, local=$LOCAL_DEFAULT"; ensure_ocl
   for n in $SWEEP_SIZES; do
     serial_run "$D_CMP/serial_N$n" "$n" "$n" "$SWEEP_ITER"
     for i in $(seq 1 "$SWEEP_REPS"); do ocl_run "$D_CMP/ocl_N${n}_r$i" "$n" "$n" "$SWEEP_ITER" "$LOCAL_DEFAULT"; done
@@ -288,7 +305,7 @@ fi
 
 # ---- monitor (3.8, roteiro 11): nvidia-smi dmon ------------------------------------------
 if want monitor; then
-  log "### monitor (nvidia-smi dmon)"; ensure_bins
+  log "### monitor (nvidia-smi dmon)"; ensure_ocl
   rm -f "$D_MON/indisponivel.txt"
   if ! command -v nvidia-smi >/dev/null 2>&1; then
     echo "nvidia-smi não encontrado: monitoramento indisponível neste dispositivo (não-NVIDIA ou driver ausente)." > "$D_MON/indisponivel.txt"

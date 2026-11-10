@@ -13,6 +13,7 @@
  *           (a biblioteca vai DEPOIS do fonte: com --as-needed, o comando do
  *            enunciado "-lOpenCL -o ... .c" pode falhar no link)
  * Codigos de saida: 0 ok | 1 erro | 2 local_size invalido para o dispositivo
+ *                   | 3 nenhuma plataforma OpenCL no ambiente
  */
 #define _POSIX_C_SOURCE 199309L      /* clock_gettime em C99 estrito */
 #define CL_TARGET_OPENCL_VERSION 120 /* clCreateCommandQueue (exigida) sem aviso */
@@ -27,6 +28,10 @@
     do { if ((err) != CL_SUCCESS) { \
         fprintf(stderr, "ERRO OpenCL: %s (%d)\n", (msg), (int)(err)); \
         exit(EXIT_FAILURE); } } while (0)
+
+#ifndef CL_PLATFORM_NOT_FOUND_KHR
+#define CL_PLATFORM_NOT_FOUND_KHR -1001   /* ICD loader sem nenhuma plataforma */
+#endif
 
 /* Extensao NVIDIA (usada so para registrar dados da ocupacao teorica) */
 #ifndef CL_DEVICE_COMPUTE_CAPABILITY_MAJOR_NV
@@ -109,11 +114,19 @@ static void select_device(cl_platform_id *plat_out, cl_device_id *dev_out)
 {
     cl_uint np = 0;
     cl_int err = clGetPlatformIDs(0, NULL, &np);
-    CHECK_CL(err, "clGetPlatformIDs(contagem)");
-    if (np == 0) {
-        fprintf(stderr, "Nenhuma plataforma OpenCL (verifique /etc/OpenCL/vendors e o driver)\n");
-        exit(EXIT_FAILURE);
+    if (err == CL_PLATFORM_NOT_FOUND_KHR || (err == CL_SUCCESS && np == 0)) {
+        fprintf(stderr,
+            "ERRO OpenCL: nenhuma plataforma OpenCL encontrada (clGetPlatformIDs: %d).\n"
+            "O loader (libOpenCL) nao achou nenhum driver. Verifique:\n"
+            "  1) ls -la /etc/OpenCL/vendors/   (deve haver um .icd, ex.: nvidia.icd)\n"
+            "  2) o .icd aponta para uma biblioteca existente (cat /etc/OpenCL/vendors/*.icd)\n"
+            "  3) driver instalado com suporte OpenCL (NVIDIA: libnvidia-compute / nvidia-opencl-icd)\n"
+            "  4) em container/ssh: acesso a GPU (docker --gpus all, NVIDIA_DRIVER_CAPABILITIES=compute,utility)\n"
+            "  5) variavel OCL_ICD_VENDORS apontando para o lugar errado; teste com 'clinfo'\n",
+            (int)err);
+        exit(3);                              /* 3 = ambiente sem OpenCL */
     }
+    CHECK_CL(err, "clGetPlatformIDs(contagem)");
     cl_platform_id *plats = malloc(np * sizeof *plats);
     err = clGetPlatformIDs(np, plats, NULL);
     CHECK_CL(err, "clGetPlatformIDs");
